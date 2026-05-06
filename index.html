@@ -94,7 +94,7 @@
   #score-overlay {
     position: absolute;
     left: 50%;
-    top: 60%;
+    top: 38%;
     transform: translate(-50%, -50%);
     background: rgba(0, 0, 0, 0.88);
     border: 1px solid #4a4a4a;
@@ -420,12 +420,23 @@ boot();
 // Lobby
 // =========================================================================
 const SCORE_API = "https://cs1005cs1005.pythonanywhere.com/score";
-const INITIAL_ENEMIES = 5;
-const MAX_ENEMIES = 100;
-const SPAWN_DOUBLE_SEC = 6;   // enemy population doubles every N seconds
-const WEAPON_TIER_2 = 5;       // kills required for 2-shot spread
-const WEAPON_TIER_3 = 10;      // kills required for 3-shot spread
-const WEAPON_TIER_RING = 20;   // kills required for the omnidirectional ring
+const SCORES_API = "https://cs1005cs1005.pythonanywhere.com/scores";
+const INITIAL_ENEMIES = 4;
+const MAX_ENEMIES = 160;
+const SPAWN_DOUBLE_SEC = 10;
+const WEAPON_TIER_2 = 5;       // 2-shot spread
+const WEAPON_TIER_3 = 10;      // 3-shot spread
+const WEAPON_TIER_RING = 20;   // adds the small ring
+const WEAPON_TIER_4 = 30;      // 4-shot spread
+const WEAPON_TIER_RING_BIG = 50; // bigger / faster ring
+const WEAPON_TIER_PIERCE = 100;  // 5-shot spread + piercing + dense ring
+const WEAPON_TIER_MEGA   = 500;  // 6-shot, 2x damage, triple counter-rotating ring
+const BOSS_STEP = 100;         // every N kills, escalating boss wave
+const MEGA_RIGHT  = 1000;      // mega projectors from the right
+const MEGA_LEFT   = 2000;      // + left
+const MEGA_TOP    = 3000;      // + top
+const MEGA_BOTTOM = 4000;      // + bottom
+const MEGA_CENTER = 5000;      // + center circles, faster cadence
 
 const DECOR = [
   { type: "tree", x:  90, y: 170 },
@@ -471,11 +482,14 @@ const player = {
   speed: 3.0,
   cooldown: 0,
   facing: 1,
-  hp: 10, maxHp: 10,
+  hp: 20, maxHp: 20,
   invuln: 0,
   shotsFired: 0,
   shotsHit: 0,
 };
+
+const HEAL_INTERVAL_MS = 10000;
+let lastHealTime = 0;
 
 const enemyTypes = ["bug", "mask", "virus"];
 const bugColors  = ["#7ad068", "#68a0d0", "#b878d0"];
@@ -487,6 +501,9 @@ let kills = 0;
 let t = 0;
 let gameOver = false;
 let gameStartTime = 0;
+let nextBossMilestone = BOSS_STEP;
+let highScores = [];
+let scorePhase = "submit"; // "submit" | "leaderboard"
 
 function startLobby() {
   if (!lobbyStarted) {
@@ -500,6 +517,7 @@ function startLobby() {
     player.x = W / 2; player.y = H * 0.78;
     for (let i = 0; i < INITIAL_ENEMIES; i++) enemies.push(spawnEnemy());
     gameStartTime = performance.now();
+    lastHealTime = gameStartTime;
     setupLobbyInput();
     requestAnimationFrame(frame);
   }
@@ -555,6 +573,48 @@ function setupLobbyInput() {
   canvas.addEventListener("contextmenu", e => e.preventDefault());
 }
 
+function numShots() {
+  if (kills >= WEAPON_TIER_MEGA)   return 6;
+  if (kills >= WEAPON_TIER_PIERCE) return 5;
+  if (kills >= WEAPON_TIER_4)      return 4;
+  if (kills >= WEAPON_TIER_3)      return 3;
+  if (kills >= WEAPON_TIER_2)      return 2;
+  return 1;
+}
+
+function bulletDamage() {
+  return kills >= WEAPON_TIER_MEGA ? 2 : 1;
+}
+
+function ringConfig() {
+  if (kills >= WEAPON_TIER_MEGA)
+    return { count: 24, speed: 9.5, every: 9,  life: 80, spin: 1.8, pierce: true, dual: true, triple: true };
+  if (kills >= WEAPON_TIER_PIERCE)
+    return { count: 16, speed: 8.5, every: 12, life: 70, spin: 1.5, pierce: true, dual: true };
+  if (kills >= WEAPON_TIER_RING_BIG)
+    return { count: 12, speed: 7.2, every: 16, life: 65, spin: 1.2, pierce: false };
+  if (kills >= WEAPON_TIER_RING)
+    return { count: 8,  speed: 6.0, every: 22, life: 55, spin: 1.0, pierce: false };
+  return null;
+}
+
+function spawnBoss(idx) {
+  const boss = spawnEnemy();
+  const palette = ["#ff3030", "#ff6020", "#ff20a0", "#ff20ff", "#a020ff", "#ff8060"];
+  boss.type = "virus";
+  boss.boss = true;
+  boss.bossIdx = idx;
+  boss.color = palette[idx % palette.length];
+  boss.size = 1.7 + Math.min(idx, 8) * 0.12;
+  boss.maxHp = 40 + idx * 22;             // ~2x previous + harder scaling
+  boss.hp = boss.maxHp;
+  boss.speedMul = 1.6 + Math.min(idx, 6) * 0.12;
+  boss.fireRate = Math.max(35, 100 - idx * 6);
+  boss.fireCD = 50;
+  boss.damage = 2 + Math.floor(idx / 3);  // bullets hit harder, scales every 3 milestones
+  enemies.push(boss);
+}
+
 function spawnEnemy() {
   const type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
   const color = type === "mask" ? "#e8d8b8"
@@ -593,23 +653,45 @@ function restartGame() {
   enemies.length = 0;
   for (let i = 0; i < INITIAL_ENEMIES; i++) enemies.push(spawnEnemy());
   kills = 0;
+  nextBossMilestone = BOSS_STEP;
+  scorePhase = "submit";
+  highScores = [];
   gameOver = false;
   gameStartTime = performance.now();
+  lastHealTime = gameStartTime;
   canvas.focus();
 }
 
 function showScoreOverlay() {
+  scorePhase = "submit";
   scoreOverlay.hidden = false;
   scoreNameInput.value = "";
   scoreNameInput.disabled = false;
   scoreStatusEl.textContent = "";
   scoreSubmitting = false;
+  loadHighScores();   // start fetch in the background
   setTimeout(() => scoreNameInput.focus(), 30);
 }
 
 function hideScoreOverlay() {
   scoreOverlay.hidden = true;
   if (document.activeElement === scoreNameInput) scoreNameInput.blur();
+}
+
+function showLeaderboard() {
+  scorePhase = "leaderboard";
+  hideScoreOverlay();
+  canvas.focus();
+}
+
+async function loadHighScores() {
+  try {
+    const r = await fetch(SCORES_API);
+    if (r.ok) {
+      const data = await r.json();
+      if (Array.isArray(data)) highScores = data.slice(0, 10);
+    }
+  } catch {}
 }
 
 async function submitScore() {
@@ -637,7 +719,8 @@ async function submitScore() {
       return;
     }
     scoreStatusEl.textContent = "Score submitted!";
-    setTimeout(() => { hideScoreOverlay(); canvas.focus(); }, 900);
+    await loadHighScores();
+    setTimeout(showLeaderboard, 900);
   } catch (err) {
     scoreStatusEl.textContent = "Could not connect to server.";
     scoreNameInput.disabled = false;
@@ -651,7 +734,7 @@ scoreNameInput.addEventListener("input", () => {
   if (cleaned !== scoreNameInput.value) scoreNameInput.value = cleaned;
 });
 scoreForm.addEventListener("submit", e => { e.preventDefault(); submitScore(); });
-scoreSkipBtn.addEventListener("click", () => { hideScoreOverlay(); canvas.focus(); });
+scoreSkipBtn.addEventListener("click", showLeaderboard);
 
 // --- Update --------------------------------------------------------------
 function update() {
@@ -677,43 +760,90 @@ function update() {
 
   if (player.invuln > 0) player.invuln--;
 
+  // Passive regen: +1 HP every 10s up to max.
+  const nowMs = performance.now();
+  if (nowMs - lastHealTime >= HEAL_INTERVAL_MS) {
+    if (player.hp < player.maxHp) player.hp++;
+    lastHealTime = nowMs;
+  }
+
   player.cooldown = Math.max(0, player.cooldown - 1);
+  const N = numShots();
+  const pierce = kills >= WEAPON_TIER_PIERCE;
+  const dmg = bulletDamage();
   if (mouse.down && player.cooldown <= 0) {
     const ax = mouse.x - player.x;
     const ay = mouse.y - player.y;
     const baseAngle = Math.atan2(ay, ax);
-    const numShots = kills >= WEAPON_TIER_3 ? 3 : kills >= WEAPON_TIER_2 ? 2 : 1;
-    const spread = 0.18;
-    for (let i = 0; i < numShots; i++) {
-      const offset = numShots === 1 ? 0
-                   : numShots === 2 ? (i === 0 ? -spread/2 : spread/2)
-                   : (i - 1) * spread;
+    const spread = 0.16;
+    for (let i = 0; i < N; i++) {
+      const offset = N === 1 ? 0 : (i - (N - 1) / 2) * spread;
       const a = baseAngle + offset;
       bullets.push({
         x: player.x, y: player.y - 4,
-        vx: Math.cos(a) * 9.5,
-        vy: Math.sin(a) * 9.5,
+        vx: Math.cos(a) * (pierce ? 11 : 9.5),
+        vy: Math.sin(a) * (pierce ? 11 : 9.5),
         life: 60,
         digit: Math.random() < 0.5 ? "0" : "1",
+        pierce,
+        damage: dmg,
       });
     }
-    player.shotsFired += numShots;
-    player.cooldown = 6;
+    player.shotsFired += N;
+    // Fire rate accelerates as more enemies appear; MEGA tier lowers the floor.
+    const minCD = kills >= WEAPON_TIER_MEGA ? 1 : 2;
+    player.cooldown = Math.max(minCD, 6 - Math.floor(enemies.length / 25));
   }
 
-  // Omnidirectional ring at WEAPON_TIER_RING+ kills.
-  if (kills >= WEAPON_TIER_RING && t % 22 === 0) {
-    const N = 12;
-    for (let i = 0; i < N; i++) {
-      const a = (i / N) * Math.PI * 2 + (t * 0.003);
+  // Omnidirectional ring — properties scale with weapon tier.
+  const ring = ringConfig();
+  if (ring && t % ring.every === 0) {
+    for (let i = 0; i < ring.count; i++) {
+      const a = (i / ring.count) * Math.PI * 2 + (t * 0.003) * (ring.spin || 1);
       bullets.push({
         x: player.x, y: player.y - 4,
-        vx: Math.cos(a) * 6.5,
-        vy: Math.sin(a) * 6.5,
-        life: 55,
+        vx: Math.cos(a) * ring.speed,
+        vy: Math.sin(a) * ring.speed,
+        life: ring.life,
         digit: Math.random() < 0.5 ? "0" : "1",
         passive: true,
+        pierce: ring.pierce || false,
+        damage: dmg,
       });
+    }
+    // Dense tier also fires a counter-rotating outer ring.
+    if (ring.dual) {
+      const N2 = ring.count;
+      for (let i = 0; i < N2; i++) {
+        const a = (i / N2) * Math.PI * 2 - (t * 0.004);
+        bullets.push({
+          x: player.x, y: player.y - 4,
+          vx: Math.cos(a) * (ring.speed * 0.7),
+          vy: Math.sin(a) * (ring.speed * 0.7),
+          life: ring.life,
+          digit: Math.random() < 0.5 ? "0" : "1",
+          passive: true,
+          pierce: true,
+          damage: dmg,
+        });
+      }
+    }
+    // MEGA tier: third inner ring spinning forward, fast.
+    if (ring.triple) {
+      const N3 = Math.floor(ring.count * 0.75);
+      for (let i = 0; i < N3; i++) {
+        const a = (i / N3) * Math.PI * 2 + (t * 0.006);
+        bullets.push({
+          x: player.x, y: player.y - 4,
+          vx: Math.cos(a) * (ring.speed * 1.15),
+          vy: Math.sin(a) * (ring.speed * 1.15),
+          life: ring.life,
+          digit: Math.random() < 0.5 ? "0" : "1",
+          passive: true,
+          pierce: true,
+          damage: dmg,
+        });
+      }
     }
   }
 
@@ -723,18 +853,42 @@ function update() {
     if (b.life <= 0 || b.x < 0 || b.x > W || b.y < 0 || b.y > H) {
       bullets.splice(i, 1); continue;
     }
+    let consumed = false;
+    const hitDmg = b.damage || 1;
     for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
-      if (Math.hypot(b.x - e.x, b.y - e.y) < 14) {
-        e.hp--;
+      const hitR = 14 * (e.size || 1);
+      if (Math.hypot(b.x - e.x, b.y - e.y) >= hitR) continue;
+      if (b.pierce) {
+        if (!b.hits) b.hits = new Set();
+        if (b.hits.has(e)) continue;
+        b.hits.add(e);
+        e.hp -= hitDmg;
+        e.flash = 6;
+        if (!b.passive) player.shotsHit++;
+        if (e.hp <= 0) { kills++; enemies.splice(j, 1); }
+      } else {
+        e.hp -= hitDmg;
         e.flash = 6;
         bullets.splice(i, 1);
         if (!b.passive) player.shotsHit++;
         if (e.hp <= 0) { kills++; enemies.splice(j, 1); }
+        consumed = true;
         break;
       }
     }
+    if (consumed) continue;
   }
+
+  // Boss waves: every 50 kills, spawn an escalating count (1 at 50, 2 at 100, 3 at 150, …).
+  while (kills >= nextBossMilestone) {
+    const idx = Math.floor(nextBossMilestone / BOSS_STEP) - 1;
+    const count = idx + 1;
+    for (let i = 0; i < count; i++) spawnBoss(idx);
+    nextBossMilestone += BOSS_STEP;
+  }
+
+  megaUpdate();
 
   // Time-based exponential spawn ramp.
   const elapsed = (performance.now() - gameStartTime) / 1000;
@@ -745,8 +899,10 @@ function update() {
   if (enemies.length < target) enemies.push(spawnEnemy());
 
   for (const e of enemies) {
+    const sm = e.speedMul || 1;
     e.hop += 0.07;
-    e.x += e.vx; e.y += e.vy;
+    e.x += e.vx * sm;
+    e.y += e.vy * sm;
     if (Math.random() < 0.012) {
       e.vx = (Math.random() - 0.5) * 1.0;
       e.vy = (Math.random() - 0.5) * 1.0;
@@ -757,19 +913,23 @@ function update() {
 
     if (e.fireCD > 0) e.fireCD--;
     if (e.fireCD <= 0) {
+      const dmg = e.damage || 1;
       if (e.type === "virus") {
-        for (let i = 0; i < 16; i++) {
-          const a = (i / 16) * Math.PI * 2 + (t * 0.0005);
+        const N = e.boss ? 24 : 16;
+        const speed = e.boss ? 3.2 : 2.4;
+        for (let i = 0; i < N; i++) {
+          const a = (i / N) * Math.PI * 2 + (t * 0.0005);
           enemyBullets.push({
             x: e.x, y: e.y,
-            vx: Math.cos(a) * 2.4,
-            vy: Math.sin(a) * 2.4,
-            life: 110,
+            vx: Math.cos(a) * speed,
+            vy: Math.sin(a) * speed,
+            life: 130,
             color: e.color,
             kind: "ring",
+            damage: dmg,
           });
         }
-        e.fireCD = 180 + Math.floor(Math.random() * 60);
+        e.fireCD = e.boss ? e.fireRate : 180 + Math.floor(Math.random() * 60);
       } else if (e.type === "mask") {
         const angle = Math.atan2(player.y - e.y, player.x - e.x);
         const spread = 0.26;
@@ -782,6 +942,7 @@ function update() {
             life: 110,
             color: "#ff6464",
             kind: "spread",
+            damage: dmg,
           });
         }
         e.fireCD = 100 + Math.floor(Math.random() * 50);
@@ -794,15 +955,72 @@ function update() {
   for (let i = enemyBullets.length - 1; i >= 0; i--) {
     const b = enemyBullets[i];
     b.x += b.vx; b.y += b.vy; b.life--;
-    if (b.life <= 0 || b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10) {
+    const margin = b.kind === "mega" ? 60 : 10;
+    if (b.life <= 0 || b.x < -margin || b.x > W + margin || b.y < -margin || b.y > H + margin) {
       enemyBullets.splice(i, 1); continue;
     }
-    if (player.invuln <= 0 && Math.hypot(b.x - player.x, b.y - (player.y - 6)) < 11) {
-      player.hp--;
+    const hitR = b.kind === "mega" ? 18 : 11;
+    if (player.invuln <= 0 && Math.hypot(b.x - player.x, b.y - (player.y - 6)) < hitR) {
+      player.hp -= (b.damage || 1);
       player.invuln = 50;
       enemyBullets.splice(i, 1);
       if (player.hp <= 0) { gameOver = true; showScoreOverlay(); break; }
     }
+  }
+}
+
+// --- Mega projectors -----------------------------------------------------
+function megaUpdate() {
+  if (kills < MEGA_RIGHT) return;
+  const cycle = kills >= MEGA_CENTER ? 55
+              : kills >= MEGA_BOTTOM ? 75
+              : kills >= MEGA_TOP    ? 90
+              : kills >= MEGA_LEFT   ? 105
+              :                        130;
+  if (t % cycle !== 0) return;
+
+  if (kills >= MEGA_RIGHT)  fireMegaSalvo("right");
+  if (kills >= MEGA_LEFT)   fireMegaSalvo("left");
+  if (kills >= MEGA_TOP)    fireMegaSalvo("top");
+  if (kills >= MEGA_BOTTOM) fireMegaSalvo("bottom");
+  if (kills >= MEGA_CENTER) fireMegaCenter();
+}
+
+function fireMegaSalvo(side) {
+  const fast  = kills >= MEGA_CENTER;
+  const speed = fast ? 7.5 : 5.0;
+  const pairs = 3;
+  const damage = 3 + Math.floor((kills - MEGA_RIGHT) / 1500);
+  for (let p = 0; p < pairs; p++) {
+    const t01 = pairs === 1 ? 0.5 : p / (pairs - 1);
+    let x, y, vx, vy;
+    if (side === "right")  { x = W + 30;            y = 80 + t01 * (H - 200); vx = -speed; vy = 0; }
+    else if (side === "left")   { x = -30;          y = 80 + t01 * (H - 200); vx =  speed; vy = 0; }
+    else if (side === "top")    { x = 120 + t01 * (W - 240); y = -30;         vx = 0; vy =  speed; }
+    else                        { x = 120 + t01 * (W - 240); y = H + 30;      vx = 0; vy = -speed; }
+    enemyBullets.push({
+      x, y, vx, vy,
+      life: 280,
+      color: "#ff20ff",
+      kind: "mega",
+      damage,
+    });
+  }
+}
+
+function fireMegaCenter() {
+  const N = 28;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2 + (t * 0.003);
+    enemyBullets.push({
+      x: W/2, y: H/2,
+      vx: Math.cos(a) * 4.8,
+      vy: Math.sin(a) * 4.8,
+      life: 220,
+      color: "#ff80ff",
+      kind: "ring",
+      damage: 2,
+    });
   }
 }
 
@@ -854,9 +1072,10 @@ function render() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   for (const b of bullets) {
-    ctx.fillStyle = "rgba(127,255,127,0.4)";
+    const pierce = b.pierce;
+    ctx.fillStyle = pierce ? "rgba(255,138,255,0.45)" : "rgba(127,255,127,0.4)";
     ctx.fillText(b.digit, b.x + 1, b.y + 1);
-    ctx.fillStyle = "#cfffd0";
+    ctx.fillStyle = pierce ? "#ffaaff" : "#cfffd0";
     ctx.fillText(b.digit, b.x, b.y);
   }
   ctx.textBaseline = "alphabetic";
@@ -920,37 +1139,59 @@ function drawWeaponBar(x, y, w, h) {
   ctx.fillStyle = "#cfe7c8";
   ctx.fillText("Weapon", x + 6, y + h/2);
 
-  const numShots = kills >= WEAPON_TIER_3 ? 3 : kills >= WEAPON_TIER_2 ? 2 : 1;
-  const dotR = 2.5;
+  const N = numShots();
+  const dotR = 2.0;
   let dx = x + 58;
-  for (let i = 0; i < 3; i++) {
-    const filled = i < numShots;
+  for (let i = 0; i < 6; i++) {
+    const filled = i < N;
     if (filled) {
-      ctx.fillStyle = "#cfffd0";
+      ctx.fillStyle = i === 5 ? "#ffaa00" : "#cfffd0";
       ctx.beginPath(); ctx.arc(dx, y + h/2, dotR, 0, Math.PI * 2); ctx.fill();
     } else {
-      ctx.strokeStyle = "rgba(207,231,200,0.35)";
+      ctx.strokeStyle = "rgba(207,231,200,0.30)";
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(dx + 0.5, y + h/2 + 0.5, dotR, 0, Math.PI * 2); ctx.stroke();
     }
-    dx += 9;
+    dx += 6;
   }
 
-  const ringActive = kills >= WEAPON_TIER_RING;
-  ctx.fillStyle = ringActive ? "#ffe9a8" : "rgba(255,233,168,0.3)";
-  ctx.fillText("+", dx + 4, y + h/2);
-  if (ringActive) ctx.strokeStyle = "#ffe9a8";
-  else            ctx.strokeStyle = "rgba(255,233,168,0.3)";
+  // Ring indicator: outline always shown; lit and grows by tier.
+  let ringTier = 0;
+  if (kills >= WEAPON_TIER_MEGA)          ringTier = 4;
+  else if (kills >= WEAPON_TIER_PIERCE)   ringTier = 3;
+  else if (kills >= WEAPON_TIER_RING_BIG) ringTier = 2;
+  else if (kills >= WEAPON_TIER_RING)     ringTier = 1;
+
+  const cx = dx + 12;
+  const cy = y + h/2;
+  const r  = 4 + ringTier * 0.6;
+  const color = ringTier === 0 ? "rgba(255,233,168,0.25)"
+              : ringTier === 4 ? "#ffaa00"
+              : ringTier === 3 ? "#ff8aff"
+              :                  "#ffe9a8";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.arc(dx + 18, y + h/2, 4, 0, Math.PI * 2); ctx.stroke();
-  if (ringActive) {
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      ctx.fillStyle = "#ffe9a8";
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  if (ringTier > 0) {
+    const pips = 4 + ringTier * 2;
+    ctx.fillStyle = color;
+    for (let i = 0; i < pips; i++) {
+      const a = (i / pips) * Math.PI * 2;
       ctx.beginPath();
-      ctx.arc(dx + 18 + Math.cos(a) * 4, y + h/2 + Math.sin(a) * 4, 1, 0, Math.PI * 2);
+      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  // Pierce + damage badges.
+  ctx.font = "bold 10px ui-monospace, monospace";
+  if (kills >= WEAPON_TIER_PIERCE) {
+    ctx.fillStyle = "#ff8aff";
+    ctx.fillText("P", cx + 14, cy);
+  }
+  if (kills >= WEAPON_TIER_MEGA) {
+    ctx.fillStyle = "#ffaa00";
+    ctx.fillText("x2", cx + 26, cy);
   }
 
   ctx.textBaseline = "alphabetic";
@@ -1023,26 +1264,73 @@ function drawCursor() {
 }
 
 function drawGameOver() {
-  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillStyle = "rgba(0,0,0,0.78)";
   ctx.fillRect(0, 0, W, H);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  ctx.font = "bold 64px ui-monospace, monospace";
+  ctx.font = "bold 56px ui-monospace, monospace";
   ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.fillText("GAME OVER", W/2 + 3, H/2 - 27);
+  ctx.fillText("GAME OVER", W/2 + 3, 80);
   ctx.fillStyle = "#f07178";
-  ctx.fillText("GAME OVER", W/2, H/2 - 30);
+  ctx.fillText("GAME OVER", W/2, 78);
 
   ctx.font = "14px ui-monospace, monospace";
   ctx.fillStyle = "#ffe9a8";
-  ctx.fillText(`Bugs killed: ${kills}`, W/2, H/2 + 14);
+  ctx.fillText(`Bug kills: ${kills}`, W/2, 120);
+
+  if (scorePhase === "leaderboard") drawLeaderboard();
 
   ctx.font = "bold 13px ui-monospace, monospace";
   ctx.fillStyle = "#cfe7c8";
-  ctx.fillText("[R] restart   ·   [ESC] back to terminal", W/2, H/2 + 44);
+  ctx.textAlign = "center";
+  ctx.fillText("[R] restart   ·   [ESC] back to terminal", W/2, H - 24);
 
   ctx.textBaseline = "alphabetic";
+}
+
+function drawLeaderboard() {
+  const headerY = 160;
+  ctx.font = "bold 14px ui-monospace, monospace";
+  ctx.fillStyle = "#95e6cb";
+  ctx.textAlign = "center";
+  ctx.fillText("— TOP 10 —", W/2, headerY);
+
+  const startY = headerY + 26;
+  const lineH = 18;
+  const colX = W/2 - 180;     // left edge of the table
+  const colW = 360;
+
+  ctx.font = "12px ui-monospace, monospace";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#cfe7c8";
+
+  if (highScores.length === 0) {
+    ctx.textAlign = "center";
+    ctx.fillText("(no scores yet)", W/2, startY + lineH);
+    return;
+  }
+
+  // Header row.
+  ctx.fillStyle = "rgba(149,230,203,0.6)";
+  ctx.textAlign = "left";
+  ctx.fillText("#",    colX,        startY);
+  ctx.fillText("NAME", colX + 36,   startY);
+  ctx.textAlign = "right";
+  ctx.fillText("KILLS", colX + colW - 90, startY);
+  ctx.fillText("ACC",   colX + colW,      startY);
+
+  for (let i = 0; i < highScores.length; i++) {
+    const s = highScores[i];
+    const y = startY + lineH * (i + 1);
+    ctx.fillStyle = i === 0 ? "#ffe9a8" : "#cfe7c8";
+    ctx.textAlign = "left";
+    ctx.fillText(String(i + 1).padStart(2, " "), colX, y);
+    ctx.fillText(String(s.name).slice(0, 10),    colX + 36, y);
+    ctx.textAlign = "right";
+    ctx.fillText(String(s.score),                            colX + colW - 90, y);
+    ctx.fillText(`${Number(s.percentage).toFixed(0)}%`,      colX + colW,      y);
+  }
 }
 
 // --- Sprites -------------------------------------------------------------
@@ -1069,16 +1357,25 @@ function drawPlayer(x, y, facing) {
 
 function drawEnemy(e, hopY) {
   const x = e.x, y = e.y - hopY;
+  const scale = e.size || 1;
+  if (scale !== 1) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+    ctx.translate(-x, -y);
+  }
   if      (e.type === "bug")  drawBug(x, y, e.color, e.flash > 0);
   else if (e.type === "mask") drawMask(x, y, e.flash > 0);
   else                        drawVirus(x, y, e.color, e.flash > 0);
+  if (scale !== 1) ctx.restore();
 }
 
 function drawEnemyHpBar(e, hopY) {
   if (e.hp >= e.maxHp) return;
-  const w = 22, h = 3;
+  const scale = e.size || 1;
+  const w = 22 * scale, h = e.boss ? 4 : 3;
   const x = e.x - w/2;
-  const y = e.y - hopY - 18;
+  const y = e.y - hopY - 18 * scale;
   ctx.fillStyle = "rgba(0,0,0,0.7)";
   ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
   const fill = (e.hp / e.maxHp) * w;
@@ -1160,6 +1457,18 @@ function drawVirus(x, y, color, flash) {
 }
 
 function drawEnemyBullet(b) {
+  if (b.kind === "mega") {
+    const r = 14 + Math.sin(t * 0.25) * 2;
+    ctx.fillStyle = withAlpha(b.color, 0.25);
+    ctx.beginPath(); ctx.arc(b.x, b.y, r + 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = withAlpha(b.color, 0.55);
+    ctx.beginPath(); ctx.arc(b.x, b.y, r + 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = b.color;
+    ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.beginPath(); ctx.arc(b.x - 3, b.y - 3, 3, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
   if (b.kind === "ring") {
     const r = 4 + Math.sin(t * 0.3) * 0.6;
     ctx.fillStyle = withAlpha(b.color, 0.35);
