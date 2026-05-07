@@ -768,7 +768,6 @@ async function submitScore() {
     scoreStatusEl.textContent = "Enter a name.";
     return;
   }
-  const accuracy = player.shotsFired === 0 ? 0 : (player.shotsHit / player.shotsFired) * 100;
   scoreSubmitting = true;
   scoreNameInput.disabled = true;
   scoreStatusEl.textContent = "Sending…";
@@ -776,7 +775,7 @@ async function submitScore() {
     const r = await fetch(SCORE_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, score: kills, percentage: accuracy }),
+      body: JSON.stringify({ name, score: kills, percentage: 100 }),
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
@@ -1416,8 +1415,8 @@ function drawLeaderboard() {
 
   const startY = headerY + 26;
   const lineH = 18;
-  const colX = W/2 - 180;     // left edge of the table
-  const colW = 360;
+  const colX = W/2 - 140;     // left edge of the table
+  const colW = 280;
 
   ctx.font = "12px ui-monospace, monospace";
   ctx.textBaseline = "middle";
@@ -1435,8 +1434,7 @@ function drawLeaderboard() {
   ctx.fillText("#",    colX,        startY);
   ctx.fillText("NAME", colX + 36,   startY);
   ctx.textAlign = "right";
-  ctx.fillText("KILLS", colX + colW - 90, startY);
-  ctx.fillText("ACC",   colX + colW,      startY);
+  ctx.fillText("KILLS", colX + colW, startY);
 
   for (let i = 0; i < highScores.length; i++) {
     const s = highScores[i];
@@ -1446,8 +1444,7 @@ function drawLeaderboard() {
     ctx.fillText(String(i + 1).padStart(2, " "), colX, y);
     ctx.fillText(String(s.name).slice(0, 10),    colX + 36, y);
     ctx.textAlign = "right";
-    ctx.fillText(String(s.score),                            colX + colW - 90, y);
-    ctx.fillText(`${Number(s.percentage).toFixed(0)}%`,      colX + colW,      y);
+    ctx.fillText(String(s.score),                colX + colW, y);
   }
 }
 
